@@ -34,10 +34,10 @@ ${YQ} d --inplace ${crddir}/operators.coreos.com_operatorconditions.yaml 'spec.v
 
 for f in ${crddir}/*.yaml ; do
     ${YQ} d --inplace $f status
-    mv -v "$f" "${crddir}/0000_50_olm_00-$(basename $f | sed 's/^.*_\([^.]\+\)\.yaml/\1.crd.yaml/')"
+    mv -v "$f" "${crddir}/0000_50_olm_00-$(basename $f | cut -d_ -f2 | sed 's/.yaml/.crd.yaml/g')"
 done
 
-sed -i "s/^[Vv]ersion:.*\$/version: ${ver}/" "${chartdir}/Chart.yaml"
+sed "s/^[Vv]ersion:.*\$/version: ${ver}/" "${chartdir}/Chart.yaml" > "${chartdir}/Chart.tmp" && mv "${chartdir}/Chart.tmp" "${chartdir}/Chart.yaml"
 
 # apply local crc testing patches if necessary
 # CRC_E2E_VALUES contains the path to the values file used for running olm on crc locally
@@ -349,5 +349,5 @@ EOF
 add_ibm_managed_cloud_annotations "${ROOT_DIR}/manifests"
 
 # requires gnu sed if on mac
-find "${ROOT_DIR}/manifests" -type f -exec sed -i "/^#/d" {} \;
-find "${ROOT_DIR}/manifests" -type f -exec sed -i "1{/---/d}" {} \;
+find "${ROOT_DIR}/manifests" -type f -exec sh -c "sed \"/^#/d\" {} > ${tmpdir}/manifest.tmp && mv ${tmpdir}/manifest.tmp {}" \;
+find "${ROOT_DIR}/manifests" -type f -exec sh -c "sed \"1{/---/d;}\" {} > ${tmpdir}/manifest.tmp && mv ${tmpdir}/manifest.tmp {}" \;
