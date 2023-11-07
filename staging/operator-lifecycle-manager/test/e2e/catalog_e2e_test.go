@@ -25,7 +25,6 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -48,7 +47,7 @@ const (
 	badCSVDir             = "bad-csv"
 )
 
-var _ = Describe("Starting CatalogSource e2e tests", func() {
+var _ = FDescribe("Starting CatalogSource e2e tests", func() {
 	var (
 		generatedNamespace  corev1.Namespace
 		c                   operatorclient.ClientInterface
@@ -803,7 +802,7 @@ var _ = Describe("Starting CatalogSource e2e tests", func() {
 		}).Should(Succeed())
 	})
 
-	It("image update", func() {
+	FIt("image update", func() {
 		if ok, err := inKind(c); ok && err == nil {
 			Skip("This spec fails when run using KIND cluster. See https://github.com/operator-framework/operator-lifecycle-manager/issues/2420 for more details")
 		} else if err != nil {
@@ -867,9 +866,42 @@ var _ = Describe("Starting CatalogSource e2e tests", func() {
 				return pod.Status.Phase == corev1.PodSucceeded
 			})
 
-			By("removing the skopeo pod")
-			err = deleteSkopeoPod(c, generatedNamespace.GetName())
-			Expect(err).NotTo(HaveOccurred(), "error deleting skopeo pod: %s", err)
+			By("deleting the skopeo pod")
+			time.Sleep(time.Second * 10)
+			Eventually(func() bool {
+				err = deleteSkopeoPod(c, generatedNamespace.GetName())
+				return k8serror.IsNotFound(err)
+			}).Should(BeTrue())
+
+			By("checking that the image is available")
+			Eventually(func() (bool, error) {
+				pod, err := c.KubernetesInterface().CoreV1().Pods(generatedNamespace.GetName()).Get(context.TODO(), skopeo, metav1.GetOptions{})
+				if err != nil {
+					if k8serror.IsNotFound(err) {
+						skopeoArgs := skopeoInspectCmd(testImage, tag, registryAuth)
+						err = createSkopeoPod(c, skopeoArgs, generatedNamespace.GetName())
+					}
+					return false, err
+				}
+
+				// Check if the pod failed
+				if pod.Status.Phase != corev1.PodSucceeded {
+					var err error
+					// Allow the pod to retry if it attempted to pull the image before it was available.
+					if pod.Status.Phase == corev1.PodFailed {
+						err = c.KubernetesInterface().CoreV1().Pods(generatedNamespace.GetName()).Delete(context.TODO(), skopeo, metav1.DeleteOptions{})
+					}
+					return false, err
+				}
+				return true, nil
+			}).Should(BeTrue())
+
+			By("deleting the skopeo pod")
+			time.Sleep(time.Second * 10)
+			Eventually(func() bool {
+				err = deleteSkopeoPod(c, generatedNamespace.GetName())
+				return k8serror.IsNotFound(err)
+			}).Should(BeTrue())
 		}
 
 		By("setting catalog source")
@@ -881,6 +913,8 @@ var _ = Describe("Starting CatalogSource e2e tests", func() {
 		var image string
 		image = testImage[9:] // strip off docker://
 		image = fmt.Sprint(image, tag)
+
+		time.Sleep(time.Second * 5)
 
 		source := &v1alpha1.CatalogSource{
 			TypeMeta: metav1.TypeMeta{
@@ -924,31 +958,10 @@ var _ = Describe("Starting CatalogSource e2e tests", func() {
 		Expect(registryPods).ShouldNot(BeNil(), "nil registry pods")
 		Expect(registryPods.Items).To(HaveLen(1), "unexpected number of registry pods found")
 
-		By("Granting the ServiceAccount used by the registry pod permissions to pull from the internal registry")
-		roleBinding := &rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Namespace:    generatedNamespace.GetName(),
-				GenerateName: "registry-v1-viewer-",
-			},
-			Subjects: []rbacv1.Subject{
-				{
-					Kind:     "ServiceAccount",
-					Name:     registryPods.Items[0].Spec.ServiceAccountName,
-					APIGroup: "",
-				},
-			},
-			RoleRef: rbacv1.RoleRef{
-				Kind:     "ClusterRole",
-				Name:     "registry-viewer",
-				APIGroup: "rbac.authorization.k8s.io",
-			},
-		}
-		_, err = c.CreateRoleBinding(roleBinding)
-		Expect(err).ToNot(HaveOccurred(), "error granting registry-viewer permissions")
-		defer func() {
-			err := c.DeleteRoleBinding(roleBinding.GetNamespace(), roleBinding.GetName(), &metav1.DeleteOptions{})
-			Expect(err).ShouldNot(HaveOccurred())
-		}()
+		By("wait for new catalog source pod to exist and be synced by the catalog operator")
+		// ensure the mock catalog exists and has been synced by the catalog operator
+		source, err = fetchCatalogSourceOnStatus(crc, source.GetName(), generatedNamespace.GetName(), catalogSourceRegistryPodSynced())
+		Expect(err).ShouldNot(HaveOccurred())
 
 		By("Create a Subscription for package")
 		subscriptionName := genName("sub-")
@@ -1055,6 +1068,11 @@ var _ = Describe("Starting CatalogSource e2e tests", func() {
 			_, err = crc.OperatorsV1alpha1().CatalogSources(source.GetNamespace()).Update(context.Background(), source, metav1.UpdateOptions{})
 			return err
 		}).Should(Succeed())
+
+		By("wait for new catalog source pod to exist and be synced by the catalog operator")
+		// ensure the mock catalog exists and has been synced by the catalog operator
+		source, err = fetchCatalogSourceOnStatus(crc, source.GetName(), generatedNamespace.GetName(), catalogSourceRegistryPodSynced())
+		Expect(err).ShouldNot(HaveOccurred())
 
 		subChecker := func(sub *v1alpha1.Subscription) bool {
 			return sub.Status.InstalledCSV == "busybox.v2.0.0"

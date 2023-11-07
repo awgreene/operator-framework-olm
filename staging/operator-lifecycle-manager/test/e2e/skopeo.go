@@ -19,6 +19,9 @@ const (
 	skipTLS               = "--dest-tls-verify=false"
 	skipCreds             = "--dest-no-creds=true"
 	destCreds             = "--dest-creds="
+	inspectCreds          = "--creds="
+	inspectSkipCreds      = "--no-creds"
+	inspectSkipTLS        = "--tls-verify=false"
 	v2format              = "--format=v2s2"
 	skopeoImage           = "quay.io/olmtest/skopeo:0.1.40"
 	BuilderServiceAccount = "builder"
@@ -73,6 +76,23 @@ func skopeoCopyCmd(newImage, newTag, oldImage, oldTag, auth string) []string {
 
 	return cmd
 }
+
+
+func skopeoInspectCmd(image, tag, auth string) []string {
+	imageName := fmt.Sprint(image, tag)
+	
+	var creds string
+	if auth == "" {
+		creds = inspectSkipCreds
+	} else {
+		creds = fmt.Sprint(inspectCreds, auth)
+	}
+
+	cmd := []string{debug, insecure, "inspect", inspectSkipTLS, creds, imageName}
+
+	return cmd
+}
+
 
 func createSkopeoPod(client operatorclient.ClientInterface, args []string, namespace string) error {
 	pod := &corev1.Pod{
